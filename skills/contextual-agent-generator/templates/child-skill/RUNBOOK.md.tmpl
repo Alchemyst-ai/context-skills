@@ -1,0 +1,141 @@
+# Runbook — {{PROJECT_NAME}}
+
+End-to-end verification recipe for the agent. Run after applying the
+plan in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). Report each
+check as PASS / WARN / FAIL.
+
+---
+
+## §1. Universal checks
+
+These apply to every archetype.
+
+### §1.1 API key reachable
+
+{{#if SDK=="python"}}
+```python
+from alchemyst import Alchemyst
+import os
+client = Alchemyst(api_key=os.environ["ALCHEMYST_AI_API_KEY"])
+client.v1.context.view()  # should not raise
+print("OK: API key reachable")
+```
+{{/if}}
+{{#if SDK=="typescript"}}
+```typescript
+import Alchemyst from '@alchemyst-ai/sdk';
+const client = new Alchemyst({ apiKey: process.env.ALCHEMYST_AI_API_KEY! });
+await client.v1.context.view();
+console.log("OK: API key reachable");
+```
+{{/if}}
+
+**PASS**: prints OK, no 401/403.
+**FAIL**: any `Unauthorized` error → re-check `.env` + key in platform.
+
+### §1.2 `groupName` round-trip
+
+Add a fixture, search for it, confirm it comes back.
+
+{{#if SDK=="python"}}
+```python
+import uuid
+fixture = f"FIXTURE_{uuid.uuid4()}"
+TEST_GROUP = ["smoke-test", "verification", "round-trip"]
+
+client.v1.context.add(documents=[{
+    "content": fixture,
+    "metadata": {"groupName": TEST_GROUP, "fileName": f"{fixture}.txt"}
+}])
+hits = client.v1.context.search(query=fixture, groupName=TEST_GROUP, limit=5)
+assert any(fixture in d.content for d in hits.documents), "fixture not found"
+print("OK: groupName round-trip")
+```
+{{/if}}
+{{#if SDK=="typescript"}}
+```typescript
+import { randomUUID } from 'crypto';
+const fixture = `FIXTURE_${randomUUID()}`;
+const TEST_GROUP = ["smoke-test", "verification", "round-trip"];
+
+await client.v1.context.add({
+  documents: [{
+    content: fixture,
+    metadata: { groupName: TEST_GROUP, fileName: `${fixture}.txt` }
+  }]
+});
+const hits = await client.v1.context.search({
+  query: fixture, groupName: TEST_GROUP, limit: 5
+});
+if (!hits.documents.some(d => d.content.includes(fixture))) {
+  throw new Error("fixture not found");
+}
+console.log("OK: groupName round-trip");
+```
+{{/if}}
+
+**PASS**: fixture comes back in results.
+**FAIL**: 0 hits → indexing isn't done (wait 30s and retry once); if
+still failing, check `groupName` matches between add and search.
+
+### §1.3 End-to-end retrieval through the agent
+
+Ask the agent a question only answerable from the fixture. Confirm
+the response cites the fixture content.
+
+This is the ultimate proof — if the model isn't reaching for
+`search_context`, all the wiring above is wasted.
+
+**PASS**: agent's reply contains the fixture text or paraphrases it.
+**WARN**: agent answers but doesn't cite — tighten the system-prompt
+sentence to require citation.
+**FAIL**: agent's reply is generic or refuses → tool description is
+too vague; rewrite to start with "Use whenever the answer would
+benefit from internal documents" (or stronger for this archetype).
+
+---
+
+## §2. Archetype-specific checks
+
+{{RUNBOOK_STEPS}}
+
+---
+
+## §3. Operational checks
+
+These are not strict pre-ship gates but should be in place before
+production traffic.
+
+### §3.1 Rate limit headroom
+
+Run a quick burst — 50 ingest calls in a tight loop — and confirm
+the path doesn't hit `429`. If it does, batch the path or switch to
+`addAsync` for that surface.
+
+### §3.2 Audit trail
+
+Pull `client.v1.context.traces.list` after a representative agent
+session. Confirm the traces show the actual `groupName` queries the
+agent issued. If traces are empty, the agent isn't going through
+`search_context` (or you're hitting a stale cache).
+
+### §3.3 Off-limits enforcement
+
+For each entry in [CAPABILITIES.md](CAPABILITIES.md) §off-limits, send
+the agent a probe that should be refused/redacted. Confirm the agent's
+response respects the off-limit. (For deeper coverage, generate an
+`edge-case-testing-generator--{{SKILL_SUFFIX}}` companion skill.)
+
+---
+
+## When verification fails
+
+Don't ship. The implementation isn't done. Common patterns:
+
+| FAIL                             | First thing to check                                      |
+|----------------------------------|-----------------------------------------------------------|
+| §1.1                             | `.env` not loaded; double-check the env-loading code path |
+| §1.2                             | `groupName` schema differs between ingest and search      |
+| §1.3                             | tool description / system prompt — model isn't choosing the tool |
+| Off-limits leaks                 | system-prompt clause too soft; or `metadata` filter missing |
+| Latency / throughput problems    | `INGESTION_MODE=sync` past Alchemyst's 100-doc batch limit |

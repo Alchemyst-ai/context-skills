@@ -1,0 +1,40 @@
+# Canonical example — {{ARCHETYPE}}
+
+This is the reference flow for the matched archetype. The scaffolds
+in [../scaffolds/](../scaffolds/) are derived from this pattern; if
+your runtime behaviour deviates from what's described here, something
+is mis-wired — start the diagnosis by comparing actual flow to this.
+
+For the full archetype catalogue (and the reasoning behind why this
+one was picked over the others), see the meta skill's
+[references/agent-archetypes.md](../../../skills/contextual-agent-generator/references/agent-archetypes.md).
+
+## Why this archetype was matched for {{PROJECT_NAME}}
+
+{{ARCHETYPE_RATIONALE}}
+
+## Sequence (read top to bottom)
+
+```
+1. ingest:  reader → chunked → context.add (sync) OR addAsync + poll
+2. query:   user request → agent → search_context tool → context.search
+3. respond: tool_result merged back into the LLM call → final response
+{{#if ARCHETYPE=="agent-plus-memory"}}4. memorise: memory.add(role=user) + memory.add(role=assistant) after each turn{{/if}}
+{{#if ARCHETYPE=="voice-context-flywheel"}}4. post-call: webhook → ingest_transcript → context.add under ["calls", customer_id, call_id]
+5. nightly: distill → delete-then-add ["calls", customer_id, "summary"]{{/if}}
+{{#if ARCHETYPE=="personalized-chat"}}4. profile change: mirror to context.add under ["user", user_id, "profile"]{{/if}}
+```
+
+## groupName for this archetype
+
+```
+{{GROUP_NAME_SCHEMA}}
+```
+
+## Concrete example values
+
+When troubleshooting, pick real values from your data and trace them
+through this archetype's groupName. If you can't write down a
+plausible value for every layer, the schema is wrong for your data.
+
+(Fill in once your first user / org / session exists.)

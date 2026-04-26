@@ -1,0 +1,100 @@
+"""Ingestion entry point for {{PROJECT_NAME}}.
+
+Reads the project's data sources and adds documents to Alchemyst under
+the schema in client.GROUP_NAME_SCHEMA.
+
+Run: `python ingest.py`
+"""
+from __future__ import annotations
+
+import argparse
+import time
+from pathlib import Path
+from typing import Iterable
+
+from client import get_client, group
+
+
+def iter_source_documents() -> Iterable[dict]:
+    """Yield {content, metadata} dicts from the project's data sources.
+
+    Replace this body with reads from your actual sources — DB rows,
+    file walks, API pulls. The metadata.fileName must be unique per
+    logical document to allow delete-then-add updates.
+    """
+    # TODO(user): replace with reads from your data sources. Example:
+    # for md in Path("docs").glob("**/*.md"):
+    #     yield {
+    #         "content": md.read_text(),
+    #         "metadata": {
+    #             "fileName": str(md.relative_to("docs")),
+    #             "groupName": group("acme", "engineering", "backend"),
+    #         },
+    #     }
+    raise NotImplementedError(
+        "Replace iter_source_documents() with your project's source reader."
+    )
+
+
+def chunked(seq: Iterable[dict], size: int) -> Iterable[list[dict]]:
+    batch: list[dict] = []
+    for item in seq:
+        batch.append(item)
+        if len(batch) >= size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
+def ingest_sync(client) -> int:
+    total = 0
+    for batch in chunked(iter_source_documents(), size=100):
+        client.v1.context.add(documents=batch)
+        total += len(batch)
+        print(f"  added {len(batch)} (running total: {total})")
+    return total
+
+
+def ingest_async(client) -> int:
+    total = 0
+    job_ids: list[str] = []
+    for batch in chunked(iter_source_documents(), size=1000):
+        resp = client.v1.context.add_async(documents=batch)
+        job_ids.append(resp.jobId)
+        total += len(batch)
+        print(f"  queued {len(batch)} as job {resp.jobId}")
+
+    pending = list(job_ids)
+    while pending:
+        time.sleep(2)
+        still_pending: list[str] = []
+        for jid in pending:
+            status = client.v1.context.get_async_status(jid)
+            if status.state == "completed":
+                print(f"  job {jid}: done")
+            elif status.state == "failed":
+                print(f"  job {jid}: FAILED — {getattr(status, 'error', '?')}")
+            else:
+                still_pending.append(jid)
+        pending = still_pending
+    return total
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode",
+        choices=("sync", "async"),
+        default="{{INGESTION_MODE}}" if "{{INGESTION_MODE}}" in ("sync", "async") else "sync",
+    )
+    args = parser.parse_args()
+
+    client = get_client()
+    print(f"Ingesting in {args.mode} mode...")
+    n = ingest_sync(client) if args.mode == "sync" else ingest_async(client)
+    print(f"Done. Ingested {n} documents.")
+
+
+if __name__ == "__main__":
+    main()

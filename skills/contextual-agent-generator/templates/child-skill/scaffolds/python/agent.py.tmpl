@@ -1,0 +1,152 @@
+"""Agent loop for {{PROJECT_NAME}} — {{ARCHETYPE}} archetype.
+
+This wires the LLM call to Alchemyst's `search_context` as a tool the
+model can invoke. For inline retrieval (always-on RAG), see the
+`ALWAYS_RETRIEVE` flag below.
+
+LLM provider: {{LLM_PROVIDER}}.
+"""
+from __future__ import annotations
+
+import os
+from typing import Any
+
+from client import get_client, group
+
+ALWAYS_RETRIEVE = False  # set True to skip tool-use and always inline-retrieve
+
+
+# --- the system prompt ----------------------------------------------------
+# {{OFF_LIMITS}} clauses are encoded below.
+SYSTEM_PROMPT = """\
+You are an assistant for {{PROJECT_NAME}}.
+
+{{END_GOAL}}
+
+You have access to a `search_context` tool that retrieves documents
+from the organisation's context layer (Alchemyst). Use it whenever the
+answer would benefit from internal documents, prior conversations, or
+project-specific knowledge. When you cite information from a
+retrieved document, mention the document's source.
+
+Off-limits:
+{{OFF_LIMITS}}
+"""
+
+SEARCH_CONTEXT_TOOL = {
+    "name": "search_context",
+    "description": (
+        "Search the {{PROJECT_NAME}} context layer for documents relevant "
+        "to the question. Use whenever the answer would benefit from "
+        "internal documents, past conversations, or org-specific knowledge."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "groupName": {"type": "array", "items": {"type": "string"}},
+            "limit": {"type": "integer", "default": 5},
+        },
+        "required": ["query", "groupName"],
+    },
+}
+
+
+def search_context(query: str, group_name: list[str], limit: int = 5) -> list[dict]:
+    """Run a context search and return a list of {content, metadata, score}."""
+    client = get_client()
+    res = client.v1.context.search(
+        query=query, groupName=group_name, limit=limit, similarity_threshold=0.5
+    )
+    return [
+        {"content": d.content, "metadata": d.metadata, "score": getattr(d, "score", None)}
+        for d in res.documents
+    ]
+
+
+# --- LLM glue -------------------------------------------------------------
+# This is intentionally provider-agnostic; pick the section that
+# matches {{LLM_PROVIDER}} and delete the other.
+
+def call_anthropic(user_message: str, *, group_parts: tuple) -> str:
+    """Anthropic-style tool-use loop."""
+    import anthropic  # type: ignore
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    messages: list[dict] = [{"role": "user", "content": user_message}]
+
+    while True:
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2048,
+            system=SYSTEM_PROMPT,
+            tools=[SEARCH_CONTEXT_TOOL],
+            messages=messages,
+        )
+        # Tool-use loop
+        if resp.stop_reason == "tool_use":
+            tool_use = next(b for b in resp.content if b.type == "tool_use")
+            if tool_use.name == "search_context":
+                args = tool_use.input
+                hits = search_context(
+                    query=args["query"],
+                    group_name=args.get("groupName") or list(group_parts),
+                    limit=args.get("limit", 5),
+                )
+                messages.append({"role": "assistant", "content": resp.content})
+                messages.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tool_use.id,
+                        "content": str(hits),
+                    }],
+                })
+                continue
+        # Done
+        return "".join(b.text for b in resp.content if b.type == "text")
+
+
+def call_openai(user_message: str, *, group_parts: tuple) -> str:
+    """OpenAI-style function-calling loop."""
+    from openai import OpenAI  # type: ignore
+    client = OpenAI()
+    tools = [{"type": "function", "function": SEARCH_CONTEXT_TOOL}]
+    messages: list[dict] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_message},
+    ]
+    while True:
+        resp = client.chat.completions.create(
+            model="gpt-4o", messages=messages, tools=tools
+        )
+        msg = resp.choices[0].message
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                args = __import__("json").loads(tc.function.arguments)
+                hits = search_context(
+                    query=args["query"],
+                    group_name=args.get("groupName") or list(group_parts),
+                    limit=args.get("limit", 5),
+                )
+                messages.append(msg.model_dump())
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": str(hits),
+                })
+            continue
+        return msg.content or ""
+
+
+def main() -> None:
+    user_message = input("ask: ")
+    # TODO(user): pick which group to scope to at call time.
+    group_parts = ()  # populate based on the runtime user / session / org
+    if "{{LLM_PROVIDER}}" == "openai":
+        print(call_openai(user_message, group_parts=group_parts))
+    else:
+        print(call_anthropic(user_message, group_parts=group_parts))
+
+
+if __name__ == "__main__":
+    main()

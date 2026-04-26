@@ -1,0 +1,6 @@
+alchemyst>=0.1.0
+{{#if LLM_PROVIDER=="anthropic"}}anthropic>=0.40.0{{/if}}
+{{#if LLM_PROVIDER=="openai"}}openai>=1.0.0{{/if}}
+{{#if LLM_PROVIDER=="both"}}anthropic>=0.40.0
+openai>=1.0.0{{/if}}
+python-dotenv>=1.0.0

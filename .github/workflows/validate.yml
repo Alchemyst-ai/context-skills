@@ -1,0 +1,63 @@
+name: Validate Skills
+
+on:
+  pull_request:
+    paths:
+      - 'skills/**'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check SKILL.md frontmatter
+        run: |
+          errors=0
+          for skill_dir in skills/*/; do
+            skill_file="$skill_dir/SKILL.md"
+            if [ ! -f "$skill_file" ]; then
+              echo "❌ Missing SKILL.md in $skill_dir"
+              errors=$((errors + 1))
+              continue
+            fi
+
+            # Check for YAML frontmatter
+            if ! head -1 "$skill_file" | grep -q '^---$'; then
+              echo "❌ $skill_file: Missing YAML frontmatter"
+              errors=$((errors + 1))
+              continue
+            fi
+
+            # Check for required fields
+            frontmatter=$(sed -n '/^---$/,/^---$/p' "$skill_file")
+
+            if ! echo "$frontmatter" | grep -q '^name:'; then
+              echo "❌ $skill_file: Missing 'name' in frontmatter"
+              errors=$((errors + 1))
+            fi
+
+            if ! echo "$frontmatter" | grep -q '^description:'; then
+              echo "❌ $skill_file: Missing 'description' in frontmatter"
+              errors=$((errors + 1))
+            fi
+
+            echo "✅ $skill_file"
+          done
+
+          if [ $errors -gt 0 ]; then
+            echo ""
+            echo "Found $errors error(s)"
+            exit 1
+          fi
+
+      - name: Check skill names are kebab-case
+        run: |
+          for skill_dir in skills/*/; do
+            name=$(basename "$skill_dir")
+            if ! echo "$name" | grep -qE '^[a-z0-9]+(-[a-z0-9]+)*$'; then
+              echo "❌ '$name' is not kebab-case"
+              exit 1
+            fi
+            echo "✅ $name"
+          done

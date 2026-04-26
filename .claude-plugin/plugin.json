@@ -1,0 +1,6 @@
+{
+  "name": "alchemyst-skills",
+  "version": "0.1.0",
+  "description": "AlchemystAI internal skills — voice platform, context layer, delivery ops",
+  "homepage": "https://github.com/alchemyst-ai/skills"
+}

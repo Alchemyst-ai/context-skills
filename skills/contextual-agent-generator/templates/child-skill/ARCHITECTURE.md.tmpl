@@ -1,0 +1,69 @@
+# Architecture — {{PROJECT_NAME}}
+
+## Matched archetype: `{{ARCHETYPE}}`
+
+{{ARCHETYPE_RATIONALE}}
+
+For the canonical reference of this archetype — its `groupName`
+shape, SDK calls, and example flow — see
+[examples/matched-archetype.md](examples/matched-archetype.md). For
+the full archetype catalogue (and why the others were not picked),
+see the meta skill's
+[references/agent-archetypes.md](../../../skills/contextual-agent-generator/references/agent-archetypes.md).
+
+## `groupName` schema
+
+{{GROUP_NAME_SCHEMA}}
+
+Each layer above carries a one-line rationale. **Do not change the
+schema casually** — every existing document is indexed under it, and
+a schema change requires a re-ingest. If a new layer is needed, add
+it as a *prefix* (everyone falls under the new top layer) rather than
+restructuring.
+
+## Data flow
+
+```
+{{ARCHETYPE}} flow:
+  ingest  →  Alchemyst (groupName + metadata)
+  query   →  search_context  ←  agent / LLM
+  update  →  delete-then-add by fileName
+```
+
+See [examples/matched-archetype.md](examples/matched-archetype.md) for
+the concrete sequence diagram.
+
+## SDK & LLM wiring
+
+- **SDK**: `{{SDK}}` (only).
+- **LLM provider**: `{{LLM_PROVIDER}}`.
+- **Retrieval mode**: tool-use (model decides when to search) — unless
+  capabilities indicate it should *always* retrieve, in which case
+  inline retrieval is used.
+
+The exact tool definition / inline retrieval snippet lives under
+[scaffolds/](scaffolds/).
+
+## Off-limits enforcement
+
+The capabilities document lists the off-limits; this section is how
+each is wired in:
+
+- **System-prompt clause**: a sentence in the system prompt forbids
+  the off-limit topic.
+- **Metadata filter**: when applicable (e.g., "internal-only docs"),
+  the `search_context` call adds `metadata.visibility: "external"` so
+  internal docs never surface to external users.
+- **Post-retrieval scrub**: rare; only when neither prompt clause nor
+  filter is enough (e.g., live PII detection in user-supplied content).
+
+## What this architecture does **not** do
+
+- It does not maintain its own vector index; Alchemyst owns retrieval.
+- It does not replace the existing auth / session layer (retrofit only).
+- It does not hold mutable state outside Alchemyst — every long-lived
+  fact lives in `groupName`-scoped context.
+
+If a future requirement violates one of these (e.g., needs millisecond
+retrieval below Alchemyst's latency floor), regenerate with a
+different archetype rather than adding a side-store.

@@ -1,0 +1,186 @@
+/**
+ * Agent loop for {{PROJECT_NAME}} — {{ARCHETYPE}} archetype.
+ *
+ * Wires the LLM call to Alchemyst's `search_context` as a tool the
+ * model can invoke. For inline retrieval (always-on RAG), set
+ * ALWAYS_RETRIEVE = true.
+ *
+ * LLM provider: {{LLM_PROVIDER}}.
+ */
+import { getClient } from './client';
+
+export const ALWAYS_RETRIEVE = false;
+
+// {{OFF_LIMITS}} clauses are encoded into the system prompt below.
+export const SYSTEM_PROMPT = `\
+You are an assistant for {{PROJECT_NAME}}.
+
+{{END_GOAL}}
+
+You have access to a \`search_context\` tool that retrieves documents
+from the organisation's context layer (Alchemyst). Use it whenever the
+answer would benefit from internal documents, prior conversations, or
+project-specific knowledge. When you cite information from a retrieved
+document, mention the document's source.
+
+Off-limits:
+{{OFF_LIMITS}}
+`;
+
+export const SEARCH_CONTEXT_TOOL = {
+  name: 'search_context',
+  description:
+    'Search the {{PROJECT_NAME}} context layer for documents relevant ' +
+    'to the question. Use whenever the answer would benefit from ' +
+    'internal documents, past conversations, or org-specific knowledge.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string' },
+      groupName: { type: 'array', items: { type: 'string' } },
+      limit: { type: 'integer', default: 5 },
+    },
+    required: ['query', 'groupName'],
+  },
+} as const;
+
+export interface ContextHit {
+  content: string;
+  metadata: Record<string, unknown>;
+  score?: number;
+}
+
+export async function searchContext(
+  query: string,
+  groupName: string[],
+  limit = 5
+): Promise<ContextHit[]> {
+  const client = getClient();
+  const res = await client.v1.context.search({
+    query,
+    groupName,
+    limit,
+    similarity_threshold: 0.5,
+  });
+  return res.documents.map(d => ({
+    content: d.content,
+    metadata: d.metadata as Record<string, unknown>,
+    score: (d as unknown as { score?: number }).score,
+  }));
+}
+
+// --- LLM glue (provider-agnostic; pick the section that matches {{LLM_PROVIDER}}) ---
+
+export async function callAnthropic(
+  userMessage: string,
+  groupParts: string[]
+): Promise<string> {
+  // npm install @anthropic-ai/sdk
+  const { default: Anthropic } = await import('@anthropic-ai/sdk');
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+  const messages: Array<Record<string, unknown>> = [
+    { role: 'user', content: userMessage },
+  ];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const resp = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 2048,
+      system: SYSTEM_PROMPT,
+      tools: [SEARCH_CONTEXT_TOOL as unknown as never],
+      messages: messages as never,
+    });
+    if (resp.stop_reason === 'tool_use') {
+      const tu = resp.content.find((b: { type: string }) => b.type === 'tool_use') as
+        | { id: string; name: string; input: Record<string, unknown> }
+        | undefined;
+      if (tu?.name === 'search_context') {
+        const args = tu.input as { query: string; groupName?: string[]; limit?: number };
+        const hits = await searchContext(
+          args.query,
+          args.groupName ?? groupParts,
+          args.limit ?? 5
+        );
+        messages.push({ role: 'assistant', content: resp.content });
+        messages.push({
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: tu.id,
+              content: JSON.stringify(hits),
+            },
+          ],
+        });
+        continue;
+      }
+    }
+    return resp.content
+      .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+      .map(b => b.text)
+      .join('');
+  }
+}
+
+export async function callOpenAI(
+  userMessage: string,
+  groupParts: string[]
+): Promise<string> {
+  // npm install openai
+  const { default: OpenAI } = await import('openai');
+  const client = new OpenAI();
+  const tools = [{ type: 'function' as const, function: SEARCH_CONTEXT_TOOL }];
+  const messages: Array<Record<string, unknown>> = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user', content: userMessage },
+  ];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const resp = await client.chat.completions.create({
+      model: 'gpt-4o',
+      messages: messages as never,
+      tools: tools as never,
+    });
+    const msg = resp.choices[0].message;
+    if (msg.tool_calls?.length) {
+      for (const tc of msg.tool_calls) {
+        const args = JSON.parse(tc.function.arguments) as {
+          query: string;
+          groupName?: string[];
+          limit?: number;
+        };
+        const hits = await searchContext(
+          args.query,
+          args.groupName ?? groupParts,
+          args.limit ?? 5
+        );
+        messages.push(msg);
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: JSON.stringify(hits),
+        });
+      }
+      continue;
+    }
+    return msg.content ?? '';
+  }
+}
+
+async function main(): Promise<void> {
+  const userMessage = process.argv.slice(2).join(' ') || 'hello';
+  // TODO(user): pick which group to scope to at call time.
+  const groupParts: string[] = [];
+  const reply =
+    '{{LLM_PROVIDER}}' === 'openai'
+      ? await callOpenAI(userMessage, groupParts)
+      : await callAnthropic(userMessage, groupParts);
+  console.log(reply);
+}
+
+if (require.main === module) {
+  main().catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
+}

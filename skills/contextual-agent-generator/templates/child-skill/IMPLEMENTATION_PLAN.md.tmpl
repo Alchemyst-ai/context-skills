@@ -1,0 +1,108 @@
+# Implementation Plan — {{PROJECT_NAME}}
+
+Mode: **{{MODE}}** · Archetype: **{{ARCHETYPE}}** · SDK: **{{SDK}}**
+
+This is the ordered plan the child skill walks through. Apply in
+order — items are listed so that intermediate states never leave the
+codebase broken.
+
+---
+
+## Pre-flight
+
+1. **Alchemyst account ready.** API key generated at
+   `platform.getalchemystai.com → Settings → API Keys`.
+2. **`.env` populated.** `ALCHEMYST_AI_API_KEY=...` set; `.env`
+   gitignored. `.env.example` checked in for teammates.
+3. **SDK installed.** {{#if SDK=="python"}}`pip install alchemyst`{{/if}}{{#if SDK=="typescript"}}`npm install @alchemyst-ai/sdk`{{/if}}
+4. **API key reachable.** Run the smoke test from
+   [RUNBOOK.md](RUNBOOK.md) §1 before any code change.
+
+---
+
+{{#if MODE=="greenfield"}}
+
+## Greenfield plan
+
+The scaffolds in [scaffolds/](scaffolds/) are the file tree to copy
+into `{{PROJECT_PATH}}`.
+
+### File tree to produce
+
+```
+{{GREENFIELD_TREE}}
+```
+
+### Steps
+
+1. **Copy scaffolds.** `cp -R scaffolds/{{SDK}}/* {{PROJECT_PATH}}/`.
+2. **Install dependencies.** {{#if SDK=="python"}}`pip install -r requirements.txt`{{/if}}{{#if SDK=="typescript"}}`npm install`{{/if}}.
+3. **Wire data sources.** Open `ingest.{{SDK}}` and adapt the source
+   readers to the data sources listed in [CAPABILITIES.md](CAPABILITIES.md).
+   Each `# TODO(user):` marks a place where you must point at your
+   data; nothing else needs editing for the smoke test to pass.
+4. **Run the ingest.** Use the project's smallest data source first to
+   keep the feedback loop tight.
+5. **Run the agent.** Run `agent.{{SDK}}` with a sample query that
+   should be answerable from the ingested data. Confirm the agent
+   calls `search_context` (or inlines retrieval, depending on the
+   archetype) and cites a returned document.
+6. **Run the verification recipe.** [RUNBOOK.md](RUNBOOK.md) end-to-end.
+
+{{/if}}
+
+{{#if MODE=="retrofit"}}
+
+## Retrofit plan — minimum delta
+
+The change set below is the *minimum* set of edits to make
+`{{PROJECT_NAME}}` Alchemyst-aware. Anything beyond this list is
+scope creep — see the meta skill's
+[references/minimum-delta.md](../../../skills/contextual-agent-generator/references/minimum-delta.md).
+
+{{RETROFIT_DELTA}}
+
+### Order of application
+
+The numbered edits above are listed so that the codebase compiles /
+type-checks after each step. If the user's local copy diverges from
+what the scan saw, stop and re-run the scan from the parent skill —
+applying edits to the wrong line is worse than asking again.
+
+### One-time data ingestion
+
+After the code edits land, run the project's data sources through
+the ingestion script in [scaffolds/](scaffolds/) (the *snippet* to
+adapt, not a runnable command — the data sources are project-specific):
+
+- Adapt `scaffolds/{{SDK}}/ingest.*` to point at the project's data.
+- Run it once for the initial corpus.
+- Schedule it (cron / queue) if {{INGESTION_MODE}} is async or mixed.
+
+{{/if}}
+
+---
+
+## Verification
+
+[RUNBOOK.md](RUNBOOK.md) covers:
+
+- **Universal**: API key reachable, `groupName` round-trip, end-to-end
+  search returns the fixture
+- **Archetype-specific**: {{RUNBOOK_STEPS}}
+
+Do not declare the implementation done until **all PASS**. A WARN is
+acceptable; a FAIL is not.
+
+---
+
+## Common issues
+
+| Symptom                                          | Likely cause                                                  | Fix                                                  |
+|--------------------------------------------------|---------------------------------------------------------------|------------------------------------------------------|
+| `401 Unauthorized` on first call                 | API key wrong or `.env` not loaded                            | Re-source `.env`; verify in platform                 |
+| Search returns 0 docs after ingest               | `groupName` mismatch between ingest and search                | Confirm both use the schema in [ARCHITECTURE.md](ARCHITECTURE.md) |
+| `409 Conflict` on re-ingest                      | Same `fileName` already in the group                          | Delete-then-add (recipe in `scaffolds/`)             |
+| Model never calls `search_context`               | Tool description too vague                                    | Tighten the tool's `description` to name *when* to use it (sentence starts with "Use whenever…") |
+| Retrieval too noisy                              | `similarity_threshold` too loose / `limit` too high           | Set threshold ≥ 0.5; cap `limit` at 5–8              |
+| Latency spikes on bulk ingest                    | Sync ingest above 100 docs                                    | Switch this path to `addAsync` + polling             |

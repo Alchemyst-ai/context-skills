@@ -1,0 +1,105 @@
+/**
+ * Ingestion entry point for {{PROJECT_NAME}}.
+ *
+ * Reads the project's data sources and adds documents to Alchemyst
+ * under the schema in client.GROUP_NAME_SCHEMA.
+ *
+ * Run: `npx tsx ingest.ts`
+ */
+import { getClient, group } from './client';
+
+interface SourceDoc {
+  content: string;
+  metadata: {
+    fileName: string;
+    groupName: string[];
+    [k: string]: unknown;
+  };
+}
+
+/**
+ * Yield {content, metadata} dicts from the project's data sources.
+ *
+ * Replace this body with reads from your actual sources — DB rows,
+ * file walks, API pulls. The metadata.fileName must be unique per
+ * logical document to allow delete-then-add updates.
+ */
+async function* iterSourceDocuments(): AsyncIterable<SourceDoc> {
+  // TODO(user): replace with reads from your data sources. Example:
+  // for await (const file of fs.readdir('docs', { recursive: true })) {
+  //   yield {
+  //     content: await fs.readFile(`docs/${file}`, 'utf8'),
+  //     metadata: {
+  //       fileName: file,
+  //       groupName: group('acme', 'engineering', 'backend'),
+  //     },
+  //   };
+  // }
+  throw new Error(
+    'Replace iterSourceDocuments() with your project source reader.'
+  );
+}
+
+async function* chunked<T>(it: AsyncIterable<T>, size: number): AsyncIterable<T[]> {
+  let batch: T[] = [];
+  for await (const item of it) {
+    batch.push(item);
+    if (batch.length >= size) {
+      yield batch;
+      batch = [];
+    }
+  }
+  if (batch.length) yield batch;
+}
+
+async function ingestSync(): Promise<number> {
+  const client = getClient();
+  let total = 0;
+  for await (const batch of chunked(iterSourceDocuments(), 100)) {
+    await client.v1.context.add({ documents: batch });
+    total += batch.length;
+    console.log(`  added ${batch.length} (running total: ${total})`);
+  }
+  return total;
+}
+
+async function ingestAsync(): Promise<number> {
+  const client = getClient();
+  let total = 0;
+  const jobIds: string[] = [];
+  for await (const batch of chunked(iterSourceDocuments(), 1000)) {
+    const resp = await client.v1.context.addAsync({ documents: batch });
+    jobIds.push(resp.jobId);
+    total += batch.length;
+    console.log(`  queued ${batch.length} as job ${resp.jobId}`);
+  }
+  let pending = [...jobIds];
+  while (pending.length) {
+    await new Promise(r => setTimeout(r, 2000));
+    const stillPending: string[] = [];
+    for (const jid of pending) {
+      const status = await client.v1.context.getAsyncStatus(jid);
+      if (status.state === 'completed') {
+        console.log(`  job ${jid}: done`);
+      } else if (status.state === 'failed') {
+        console.log(`  job ${jid}: FAILED — ${status.error ?? '?'}`);
+      } else {
+        stillPending.push(jid);
+      }
+    }
+    pending = stillPending;
+  }
+  return total;
+}
+
+async function main(): Promise<void> {
+  const mode = (process.argv[2] ?? '{{INGESTION_MODE}}') as 'sync' | 'async';
+  console.log(`Ingesting in ${mode} mode...`);
+  const n = mode === 'async' ? await ingestAsync() : await ingestSync();
+  console.log(`Done. Ingested ${n} documents.`);
+}
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
