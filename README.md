@@ -88,13 +88,6 @@ act -W .github/workflows/validate.yml    # if you have nektos/act
 # or just inline the script from validate.yml
 ```
 
-## Adding a skill
-
-See [how-to.md §Authoring a new skill](how-to.md#authoring-a-new-skill).
-The short version: create `skills/<kebab-name>/SKILL.md` with valid
-frontmatter, keep references and scripts as siblings under that
-directory, and link from this README's table.
-
 ## License
 
 This repository is MIT licensed — see [LICENSE](LICENSE) for details.
